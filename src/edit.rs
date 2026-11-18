@@ -37,6 +37,21 @@ pub fn resize(img: &DynamicImage, width: u32, height: u32) -> Result<DynamicImag
     Ok(img.resize_exact(width, height, FilterType::Lanczos3))
 }
 
+/// A quarter turn in either direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Turn {
+    Left,
+    Right,
+}
+
+/// Rotates `img` a quarter turn. Lossless: pixels are moved, not resampled.
+pub fn rotate(img: &DynamicImage, turn: Turn) -> DynamicImage {
+    match turn {
+        Turn::Left => img.rotate270(),
+        Turn::Right => img.rotate90(),
+    }
+}
+
 /// Height that keeps the aspect ratio of `orig_width` x `orig_height` at `new_width`.
 pub fn proportional_height(orig_width: u32, orig_height: u32, new_width: u32) -> u32 {
     if orig_width == 0 {
@@ -89,6 +104,29 @@ mod tests {
     #[test]
     fn resize_should_fail_when_size_is_zero() {
         assert!(resize(&blank(100, 50), 0, 10).is_err());
+    }
+
+    #[test]
+    fn rotate_should_swap_width_and_height() {
+        let out = rotate(&blank(40, 10), Turn::Right);
+        assert_eq!((out.width(), out.height()), (10, 40));
+    }
+
+    #[test]
+    fn rotate_right_should_move_top_left_pixel_to_top_right() {
+        let mut img = image::RgbaImage::new(4, 2);
+        img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        let out = rotate(&DynamicImage::ImageRgba8(img), Turn::Right).to_rgba8();
+        assert_eq!(out.get_pixel(1, 0).0, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn rotate_left_then_right_should_restore_image() {
+        let mut img = image::RgbaImage::new(3, 2);
+        img.put_pixel(2, 1, image::Rgba([1, 2, 3, 255]));
+        let original = DynamicImage::ImageRgba8(img);
+        let back = rotate(&rotate(&original, Turn::Left), Turn::Right);
+        assert_eq!(back.to_rgba8(), original.to_rgba8());
     }
 
     #[test]
