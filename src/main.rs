@@ -5,6 +5,8 @@ mod app;
 mod clipboard;
 mod edit;
 mod folder;
+mod theme;
+mod view;
 
 use std::path::PathBuf;
 
@@ -20,6 +22,9 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "img-view",
         options,
-        Box::new(move |_cc| Ok(Box::new(app::ViewerApp::new(start_file)))),
+        Box::new(move |cc| {
+            let has_icons = theme::apply(&cc.egui_ctx);
+            Ok(Box::new(app::ViewerApp::new(start_file, has_icons)))
+        }),
     )
 }
