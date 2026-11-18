@@ -5,6 +5,7 @@ mod app;
 mod clipboard;
 mod edit;
 mod folder;
+mod print;
 mod theme;
 mod view;
 

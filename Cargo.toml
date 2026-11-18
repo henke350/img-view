@@ -9,6 +9,7 @@ eframe = "0.37.0"
 egui = "0.37"
 image = "0.25.10"
 rfd = "0.18.0"
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_Xps", "Win32_UI_Controls_Dialogs", "Win32_System_Memory", "Win32_UI_WindowsAndMessaging"] }
 
 # Image decoding is painfully slow unoptimized; optimize dependencies even in debug builds.
 [profile.dev.package."*"]

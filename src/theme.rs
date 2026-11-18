@@ -14,6 +14,8 @@ pub const MUTED: Color32 = Color32::from_rgb(0x9A, 0x9A, 0x9A);
 const BUTTON: Color32 = Color32::from_rgb(0x2F, 0x2F, 0x2F);
 const BUTTON_HOVER: Color32 = Color32::from_rgb(0x3D, 0x3D, 0x3D);
 const BUTTON_DOWN: Color32 = Color32::from_rgb(0x4A, 0x4A, 0x4A);
+const CONTROL: Color32 = Color32::from_rgb(0x4A, 0x4A, 0x4A);
+const CONTROL_HOVER: Color32 = Color32::from_rgb(0x5C, 0x5C, 0x5C);
 const HAIRLINE: Color32 = Color32::from_rgb(0x18, 0x18, 0x18);
 /// Selection yellow: used only for the selection outline and the Crop button it enables.
 pub const MARQUEE: Color32 = Color32::from_rgb(0xF0, 0xC4, 0x19);
@@ -51,13 +53,15 @@ pub fn apply(ctx: &egui::Context) -> bool {
         v.selection.stroke = Stroke::new(1.0, MARQUEE);
         v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, HAIRLINE);
         v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, MUTED);
-        for (w, fill) in [
-            (&mut v.widgets.inactive, BUTTON),
-            (&mut v.widgets.hovered, BUTTON_HOVER),
-            (&mut v.widgets.active, BUTTON_DOWN),
+        // Buttons use `weak_bg_fill`; radio buttons, checkboxes and number fields use
+        // `bg_fill`, which needs more contrast to be visible on the dark chrome.
+        for (w, fill, control) in [
+            (&mut v.widgets.inactive, BUTTON, CONTROL),
+            (&mut v.widgets.hovered, BUTTON_HOVER, CONTROL_HOVER),
+            (&mut v.widgets.active, BUTTON_DOWN, CONTROL_HOVER),
         ] {
             w.weak_bg_fill = fill;
-            w.bg_fill = fill;
+            w.bg_fill = control;
             w.bg_stroke = Stroke::NONE;
             w.fg_stroke = Stroke::new(1.0, TEXT);
             w.corner_radius = CornerRadius::same(4);

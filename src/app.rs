@@ -12,7 +12,8 @@ use image::{DynamicImage, ImageDecoder, ImageReader};
 
 use crate::edit::{self, PixelRect, Turn};
 use crate::view::View;
-use crate::{clipboard, folder, theme};
+use crate::print::{PrintMode, PrintOptions, Printer};
+use crate::{clipboard, folder, print, theme};
 
 const MAX_UNDO: usize = 10;
 
@@ -24,6 +25,7 @@ const EXPORT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::
 const UNDO: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Z);
 const CROP: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Y);
 const RESIZE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::R);
+const PRINT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::P);
 // Same keys as IrfanView.
 const ROTATE_LEFT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::L);
 const ROTATE_RIGHT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::R);
@@ -67,6 +69,12 @@ struct ResizeDialog {
     keep_aspect: bool,
 }
 
+struct PrintDialog {
+    options: PrintOptions,
+    /// The default printer's name and page, for the preview. `None` if no printer is installed.
+    printer: Option<(String, print::Page)>,
+}
+
 enum Action {
     Open,
     Save,
@@ -75,6 +83,7 @@ enum Action {
     Undo,
     Crop,
     ShowResize,
+    ShowPrint,
     Step(isize),
     Copy,
     /// Ask egui to read the clipboard; the result arrives as a paste event.
@@ -100,6 +109,7 @@ pub struct ViewerApp {
     folder: Vec<PathBuf>,
     selection: Option<Selection>,
     resize_dialog: Option<ResizeDialog>,
+    print_dialog: Option<PrintDialog>,
     undo: Vec<DynamicImage>,
     status: String,
     view: View,
@@ -118,6 +128,7 @@ impl ViewerApp {
             folder: Vec::new(),
             selection: None,
             resize_dialog: None,
+            print_dialog: None,
             undo: Vec::new(),
             status: "Press O to open an image, or drop one here.".to_owned(),
             view: View::default(),
@@ -299,6 +310,29 @@ impl ViewerApp {
         }
     }
 
+    fn show_print_dialog(&mut self) {
+        if self.doc.is_none() {
+            return;
+        }
+        let printer = Printer::default_printer().map(|p| (p.name.clone(), p.page()));
+        let options = self.print_dialog.as_ref().map_or_else(PrintOptions::default, |d| d.options);
+        self.print_dialog = Some(PrintDialog { options, printer });
+    }
+
+    /// Opens the Windows printer dialog and prints. Blocks while the dialog is open.
+    fn print(&mut self, options: &PrintOptions) {
+        let Some(doc) = &self.doc else { return };
+        let Some(printer) = Printer::choose() else {
+            self.status = "Printing cancelled.".to_owned();
+            return;
+        };
+        let title = doc.path.as_deref().map_or_else(|| "Pasted image".to_owned(), file_name);
+        self.status = match printer.print(&doc.image, options, &title, None) {
+            Ok(()) => format!("Sent to {}.", printer.name),
+            Err(e) => format!("Could not print: {e:#}"),
+        };
+    }
+
     fn run(&mut self, ctx: &egui::Context, action: Action) {
         match action {
             Action::Copy => self.copy(ctx),
@@ -312,6 +346,7 @@ impl ViewerApp {
             Action::Undo => self.undo(),
             Action::Crop => self.crop_to_selection(),
             Action::ShowResize => self.show_resize_dialog(),
+            Action::ShowPrint => self.show_print_dialog(),
             Action::Step(step) => self.step(step),
             Action::Rotate(turn) => self.apply(|img| Ok(edit::rotate(img, turn))),
             Action::Zoom(change) => self.zoom(change),
@@ -320,7 +355,7 @@ impl ViewerApp {
 
     fn keyboard_action(&self, ctx: &egui::Context) -> Option<Action> {
         // Don't steal keys while the user is typing into the resize dialog.
-        if self.resize_dialog.is_some() {
+        if self.resize_dialog.is_some() || self.print_dialog.is_some() {
             return None;
         }
         ctx.input_mut(|i| {
@@ -346,6 +381,8 @@ impl ViewerApp {
                 Some(Action::Crop)
             } else if i.consume_shortcut(&RESIZE) {
                 Some(Action::ShowResize)
+            } else if i.consume_shortcut(&PRINT) {
+                Some(Action::ShowPrint)
             } else if i.consume_shortcut(&OPEN) {
                 Some(Action::Open)
             } else if i.consume_shortcut(&ROTATE_LEFT) {
@@ -397,6 +434,7 @@ impl ViewerApp {
             button(ui, modified, Icon::SAVE, "Save", format!("save changes to this file ({})", keys(&SAVE)), Action::Save);
             button(ui, has_doc, Icon::SAVE_AS, "Save as", format!("save to a new file and keep working on it ({})", keys(&SAVE_AS)), Action::SaveAs);
             button(ui, has_doc, Icon::EXPORT, "Export", format!("save a copy in another format ({})", keys(&EXPORT)), Action::Export);
+            button(ui, has_doc, Icon::PRINT, "Print", format!("print on paper ({})", keys(&PRINT)), Action::ShowPrint);
             ui.separator();
 
             let what = if selected.is_some() { "the selection" } else { "the whole image" };
@@ -551,6 +589,72 @@ impl ViewerApp {
         }
     }
 
+    fn print_window(&mut self, ctx: &egui::Context) {
+        let (Some(dialog), Some(doc)) = (&mut self.print_dialog, &self.doc) else { return };
+        let image_px = (doc.image.width(), doc.image.height());
+        let texture = self.texture.as_ref().map(egui::TextureHandle::id);
+        let mut print_clicked = false;
+        let mut close = false;
+
+        egui::Window::new("Print")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.horizontal_top(|ui| {
+                    match &dialog.printer {
+                        Some((_, page)) => page_preview(ui, page, image_px, &dialog.options, texture),
+                        None => {
+                            ui.label("No printer is installed.");
+                        }
+                    }
+                    ui.add_space(12.0);
+                    ui.vertical(|ui| {
+                        let o = &mut dialog.options;
+                        ui.label("Size on paper");
+                        ui.radio_value(&mut o.mode, PrintMode::FitToPage, "Fit to page");
+                        ui.horizontal(|ui| {
+                            ui.radio_value(&mut o.mode, PrintMode::Original, "Original size at");
+                            ui.add(egui::DragValue::new(&mut o.image_dpi).range(10.0..=2400.0).suffix(" dpi"));
+                        });
+                        ui.horizontal(|ui| {
+                            ui.radio_value(&mut o.mode, PrintMode::Scale, "Scale to");
+                            let scale = ui.add(egui::DragValue::new(&mut o.scale_percent).range(1.0..=1000.0).suffix(" %"));
+                            if scale.changed() {
+                                o.mode = PrintMode::Scale;
+                            }
+                            ui.label("of original");
+                        });
+                        ui.add_space(8.0);
+                        if let Some((name, page)) = &dialog.printer {
+                            let place = print::layout(image_px, o, page);
+                            let (w, h) = place.size_cm(page);
+                            ui.label(format!("Prints at {w:.1} × {h:.1} cm, aspect ratio kept."));
+                            if !place.fits(page) {
+                                ui.colored_label(theme::MARQUEE, "Larger than the page: the edges will be cut off.");
+                            }
+                            ui.add_space(8.0);
+                            ui.weak(format!("Preview for {name}. You can pick another printer, paper and copies next."));
+                        }
+                    });
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    print_clicked = ui.add_enabled(dialog.printer.is_some(), egui::Button::new("Print…")).clicked();
+                    close = ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(Key::Escape));
+                });
+            });
+
+        let options = dialog.options;
+        if print_clicked {
+            // Keep the options for next time, but close our window before the Windows one opens.
+            self.print_dialog = None;
+            self.print(&options);
+        } else if close {
+            self.print_dialog = None;
+        }
+    }
+
     fn resize_window(&mut self, ctx: &egui::Context) {
         let Some(dialog) = &mut self.resize_dialog else { return };
         let Some(doc) = &self.doc else { return };
@@ -641,7 +745,7 @@ impl eframe::App for ViewerApp {
         if let Some(path) = dropped {
             self.open(&path);
         }
-        if self.resize_dialog.is_none() && ctx.input(|i| i.key_pressed(Key::Escape)) {
+        if self.resize_dialog.is_none() && self.print_dialog.is_none() && ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.selection = None;
         }
 
@@ -658,6 +762,7 @@ impl eframe::App for ViewerApp {
         self.refresh_texture(ctx);
         self.update_title(ctx);
         self.resize_window(ctx);
+        self.print_window(ctx);
         // The resize may have changed the image; upload it before drawing.
         self.refresh_texture(ctx);
 
@@ -684,6 +789,34 @@ fn load_image(path: &Path) -> Result<DynamicImage> {
     Ok(image)
 }
 
+/// A small drawing of the sheet of paper with the image where it will print.
+/// The faint outline is the printable area; anything outside it is cut off.
+fn page_preview(ui: &mut egui::Ui, page: &print::Page, image_px: (u32, u32), options: &PrintOptions, texture: Option<egui::TextureId>) {
+    const MAX_SIDE: f32 = 260.0;
+    let paper = Vec2::new(page.paper.0.max(1) as f32, page.paper.1.max(1) as f32);
+    let k = (MAX_SIDE / paper.x).min(MAX_SIDE / paper.y);
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(MAX_SIDE), Sense::hover());
+    let sheet = Rect::from_center_size(rect.center(), paper * k);
+    let printable = Rect::from_min_size(
+        sheet.min + Vec2::new(page.offset.0 as f32, page.offset.1 as f32) * k,
+        Vec2::new(page.printable.0 as f32, page.printable.1 as f32) * k,
+    );
+    let place = print::layout(image_px, options, page);
+    let image_rect = Rect::from_min_size(
+        printable.min + Vec2::new(place.x as f32, place.y as f32) * k,
+        Vec2::new(place.width as f32, place.height as f32) * k,
+    );
+
+    let painter = ui.painter();
+    painter.rect_filled(sheet.translate(Vec2::splat(2.0)), 0.0, Color32::from_black_alpha(90));
+    painter.rect_filled(sheet, 0.0, Color32::WHITE);
+    if let Some(id) = texture {
+        let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+        painter.with_clip_rect(printable).image(id, image_rect, uv, Color32::WHITE);
+    }
+    painter.rect_stroke(printable, 0.0, Stroke::new(1.0, Color32::from_gray(200)), egui::StrokeKind::Outside);
+}
+
 fn image_size(image: &DynamicImage) -> Vec2 {
     Vec2::new(image.width() as f32, image.height() as f32)
 }
@@ -704,6 +837,7 @@ impl Icon {
     const SAVE: Self = Self::Glyph('\u{E74E}');
     const SAVE_AS: Self = Self::Glyph('\u{E792}');
     const EXPORT: Self = Self::Glyph('\u{EDE1}');
+    const PRINT: Self = Self::Glyph('\u{E749}');
     const COPY: Self = Self::Glyph('\u{E8C8}');
     const PASTE: Self = Self::Glyph('\u{E77F}');
     const CROP: Self = Self::Glyph('\u{E7A8}');
