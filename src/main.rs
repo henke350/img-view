@@ -6,6 +6,7 @@ mod clipboard;
 mod edit;
 mod folder;
 mod print;
+mod selection;
 mod theme;
 mod view;
 

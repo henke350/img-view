@@ -7,7 +7,7 @@ A small, fast image viewer for Windows, inspired by IrfanView. A Rust learning e
 - Opens JPEG, PNG, GIF (first frame), BMP, TIFF, WebP, ICO, TGA, QOI, PNM, HDR, EXR
 - Respects EXIF rotation from phone and camera photos
 - Browse the other images in the same folder
-- Crop to a dragged selection, resize with aspect lock, rotate, undo
+- Crop or copy a dragged selection that you can move and resize afterwards, resize with aspect lock, rotate, undo
 - Zoom with the mouse wheel or toolbar, pan with right-drag
 - Copy and paste images through the Windows clipboard
 - Save, Save as, or Export a copy as JPEG, PNG, WebP, BMP or TIFF
@@ -26,8 +26,10 @@ A small, fast image viewer for Windows, inspired by IrfanView. A Rust learning e
 | `Ctrl+P` | Print |
 | `→` / `Space` / `PgDn` | Next image in folder |
 | `←` / `Backspace` / `PgUp` | Previous image |
-| left-drag | Select an area |
-| `Ctrl+Y` | Crop to selection |
+| left-drag | Select an area (outside it is shaded) |
+| drag an edge or corner of the selection | Resize the selection |
+| drag inside the selection | Move the selection |
+| `Ctrl+Y` / `Enter` | Crop to selection |
 | `Ctrl+R` | Resize |
 | `L` / `R` | Rotate left / right |
 | `Ctrl+C` | Copy selection (or whole image) to clipboard |

@@ -10,7 +10,8 @@ use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageDecoder, ImageReader};
 
-use crate::edit::{self, PixelRect, Turn};
+use crate::edit::{self, Turn};
+use crate::selection::{self, Adjust, Selection};
 use crate::view::View;
 use crate::print::{PrintMode, PrintOptions, Printer};
 use crate::{clipboard, folder, print, theme};
@@ -39,28 +40,6 @@ struct Document {
     path: Option<PathBuf>,
     image: DynamicImage,
     modified: bool,
-}
-
-/// A drag selection, stored in image pixel coordinates so it survives window resizes.
-#[derive(Clone, Copy)]
-struct Selection {
-    start: Pos2,
-    end: Pos2,
-}
-
-impl Selection {
-    fn to_pixel_rect(self) -> PixelRect {
-        let min = self.start.min(self.end);
-        let max = self.start.max(self.end);
-        // Coordinates are already clamped to the image, so they are non-negative.
-        let (x, y) = (min.x.round() as u32, min.y.round() as u32);
-        PixelRect {
-            x,
-            y,
-            width: (max.x.round() as u32).saturating_sub(x),
-            height: (max.y.round() as u32).saturating_sub(y),
-        }
-    }
 }
 
 struct ResizeDialog {
@@ -107,7 +86,10 @@ pub struct ViewerApp {
     texture: Option<egui::TextureHandle>,
     texture_dirty: bool,
     folder: Vec<PathBuf>,
+    /// The area Copy and Crop work on, in image pixel coordinates so it survives window resizes.
     selection: Option<Selection>,
+    /// Set while the selection is being moved or resized with the mouse.
+    adjusting: Option<Adjust>,
     resize_dialog: Option<ResizeDialog>,
     print_dialog: Option<PrintDialog>,
     undo: Vec<DynamicImage>,
@@ -127,6 +109,7 @@ impl ViewerApp {
             texture_dirty: false,
             folder: Vec::new(),
             selection: None,
+            adjusting: None,
             resize_dialog: None,
             print_dialog: None,
             undo: Vec::new(),
@@ -377,7 +360,7 @@ impl ViewerApp {
                 Some(Action::Export)
             } else if i.consume_shortcut(&UNDO) {
                 Some(Action::Undo)
-            } else if i.consume_shortcut(&CROP) {
+            } else if i.consume_shortcut(&CROP) || (self.selection.is_some() && i.key_pressed(Key::Enter)) {
                 Some(Action::Crop)
             } else if i.consume_shortcut(&RESIZE) {
                 Some(Action::ShowResize)
@@ -564,28 +547,87 @@ impl ViewerApp {
         let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
         painter.image(texture.id(), image_rect, uv, Color32::WHITE);
 
-        let to_image = |p: Pos2| ((p - image_rect.min) / scale).to_pos2().clamp(Pos2::ZERO, image_size.to_pos2());
+        let to_image_unclamped = |p: Pos2| ((p - image_rect.min) / scale).to_pos2();
+        let to_image = |p: Pos2| to_image_unclamped(p).clamp(Pos2::ZERO, image_size.to_pos2());
         let to_screen = |p: Pos2| image_rect.min + p.to_vec2() * scale;
+        let on_screen = |sel: Selection| Rect::from_two_pos(to_screen(sel.start), to_screen(sel.end));
+        // The part of the selection under a screen point; `None` means a drag there draws a new one.
+        let grip_under = |sel: Option<Selection>, p: Pos2| {
+            sel.filter(|s| !s.is_empty()).and_then(|s| selection::grip_at(on_screen(s), p))
+        };
 
+        // Left-drag: on the selection's edges or corners it resizes, inside it moves,
+        // anywhere else it draws a new selection.
         if response.drag_started_by(PointerButton::Primary)
-            && let Some(p) = response.interact_pointer_pos()
+            && let Some(origin) = ui.input(|i| i.pointer.press_origin())
         {
-            let p = to_image(p);
-            self.selection = Some(Selection { start: p, end: p });
+            if let (Some(sel), Some(grip)) = (self.selection, grip_under(self.selection, origin)) {
+                self.adjusting = Some(Adjust::begin(grip, sel, to_image_unclamped(origin)));
+            } else {
+                let p = to_image(origin);
+                self.selection = Some(Selection { start: p, end: p });
+                self.adjusting = None;
+            }
         }
         if response.dragged_by(PointerButton::Primary)
-            && let (Some(p), Some(sel)) = (response.interact_pointer_pos(), &mut self.selection)
+            && let Some(p) = response.interact_pointer_pos()
         {
-            sel.end = to_image(p);
+            match (&self.adjusting, &mut self.selection) {
+                (Some(adjust), sel) => *sel = Some(adjust.update(to_image_unclamped(p), image_size)),
+                (None, Some(sel)) => sel.end = to_image(p),
+                (None, None) => {}
+            }
         }
-        if response.clicked() {
+        if response.drag_stopped() {
+            self.adjusting = None;
+        }
+        // A click outside the selection clears it; a click inside leaves it alone.
+        if response.clicked()
+            && let Some(p) = response.interact_pointer_pos()
+            && grip_under(self.selection, p).is_none()
+        {
             self.selection = None;
         }
 
+        // Show what a drag would do: resize arrows on edges and corners, a move cross inside.
+        let grip = match self.adjusting {
+            Some(adjust) => Some(adjust.grip),
+            None => response.hover_pos().and_then(|p| grip_under(self.selection, p)),
+        };
+        if let Some(grip) = grip {
+            ui.ctx().set_cursor_icon(grip.cursor());
+        }
+
         if let Some(sel) = self.selection {
-            let rect = Rect::from_two_pos(to_screen(sel.start), to_screen(sel.end));
+            let rect = on_screen(sel);
+            if !sel.is_empty() {
+                // Darken everything outside the selection: that is what Crop removes.
+                let shade = Color32::from_black_alpha(140);
+                let img = image_rect;
+                for outside in [
+                    Rect::from_min_max(img.min, Pos2::new(img.max.x, rect.min.y)),
+                    Rect::from_min_max(Pos2::new(img.min.x, rect.max.y), img.max),
+                    Rect::from_min_max(Pos2::new(img.min.x, rect.min.y), Pos2::new(rect.min.x, rect.max.y)),
+                    Rect::from_min_max(Pos2::new(rect.max.x, rect.min.y), Pos2::new(img.max.x, rect.max.y)),
+                ] {
+                    painter.rect_filled(outside, 0.0, shade);
+                }
+            }
             painter.rect_stroke(rect, 0.0, Stroke::new(3.0, Color32::BLACK), egui::StrokeKind::Middle);
             painter.rect_stroke(rect, 0.0, Stroke::new(1.5, theme::MARQUEE), egui::StrokeKind::Middle);
+            if !sel.is_empty() {
+                // Small squares on the corners and edge midpoints, where the selection can be grabbed.
+                let (c, h) = (rect.center(), Vec2::splat(7.0));
+                for p in [
+                    rect.left_top(), Pos2::new(c.x, rect.top()), rect.right_top(),
+                    Pos2::new(rect.left(), c.y), Pos2::new(rect.right(), c.y),
+                    rect.left_bottom(), Pos2::new(c.x, rect.bottom()), rect.right_bottom(),
+                ] {
+                    let handle = Rect::from_center_size(p, h);
+                    painter.rect_filled(handle, 0.0, theme::MARQUEE);
+                    painter.rect_stroke(handle, 0.0, Stroke::new(1.0, Color32::BLACK), egui::StrokeKind::Outside);
+                }
+            }
         }
     }
 
