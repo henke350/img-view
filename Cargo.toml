@@ -5,7 +5,8 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
-eframe = "0.37.0"
+# OpenGL (glow) instead of the default wgpu: far less memory for a simple 2D viewer.
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "clipboard", "accesskit"] }
 egui = "0.37"
 image = "0.25.10"
 rfd = "0.18.0"
