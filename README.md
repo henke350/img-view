@@ -50,6 +50,18 @@ cargo run --release -- path\to\image.jpg
 The release binary is `target\release\img-view.exe`. To use it from Explorer, right-click an image, choose
 **Open with → Choose another app**, and browse to that file.
 
+## Installer
+
+```
+powershell -ExecutionPolicy Bypass -File installer\build.ps1
+```
+
+Builds the release binary and `target\installer\img-view-setup-<version>.exe` with
+[Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`). The version comes from
+`Cargo.toml`. The installer needs no admin rights (it installs for the current user), adds a Start menu entry, an
+optional desktop shortcut and an optional **Open with** entry for image files, and appears in **Settings → Apps**
+for uninstalling. It is not code-signed, so Windows SmartScreen may warn the first time it runs.
+
 ## Develop
 
 ```
